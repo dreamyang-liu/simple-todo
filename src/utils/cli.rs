@@ -10,7 +10,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    #[clap(about = "Show rodo info.")]
+    #[clap(about = "Show simple-todo info.")]
     Info,
 
     #[clap(about = "Add a todo item.")]
@@ -19,7 +19,7 @@ pub enum Commands {
         content: Option<String>,
     },
 
-    #[clap(about = "Remove a todo item.")]
+    #[clap(about = "Remove todo item by id.")]
     #[clap(visible_aliases = & ["rm"])]
     Remove {
         #[clap(help = "The item id to remove.")]
@@ -27,6 +27,6 @@ pub enum Commands {
     },
 
     #[clap(about = "List all the todo items.")]
-    #[clap(visible_aliases = & ["ls", "ll", "la"])]
+    #[clap(visible_aliases = & ["ls"])]
     List,
 }

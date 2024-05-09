@@ -1,47 +1,46 @@
+use log::{debug, error, info, warn};
+use rand::Rng;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Error, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use log::{error, info, warn};
 
-use super::error::DatabaseError;
-
-pub fn parse_line(line: &str) -> Result<Record, DatabaseError> {
+pub fn parse_line(line: &str) -> Record {
     let fields: Vec<&str> = line.split(',').collect();
     if fields.len() == 1 {
-        error!("Found error line: {}", line);
+        panic!("Found error line: {}", line);
     }
     if fields.len() == 2 {
         let operation = match fields[1].parse::<i32>().unwrap() {
             0 => Operation::APPEND,
             1 => Operation::REMOVE,
-            _ => return Err(DatabaseError::new("Undefined operation")),
+            k => panic!("Undefined operation: {}", k),
         };
-        return Ok(Record {
+        return Record {
             id: fields[0].parse::<u64>().unwrap(),
             content: None,
-            operation: operation
-        });
+            operation: operation,
+        };
     }
     if fields.len() == 3 {
         let operation = match fields[1].parse::<i32>().unwrap() {
             0 => Operation::APPEND,
             1 => Operation::REMOVE,
-            _ => return Err(DatabaseError::new("Undefined operation"))
+            k => panic!("Undefined operation: {}", k),
         };
-        return Ok(Record {
+        return Record {
             id: fields[0].parse::<u64>().unwrap(),
             content: Some(fields[2].to_string()),
-            operation: operation
-        });
+            operation: operation,
+        };
     }
-    panic!("dirty record");
+    panic!("dirty record: {}", line);
 }
 
 pub enum Operation {
     APPEND = 0,
-    REMOVE = 1
+    REMOVE = 1,
 }
 
 pub struct Record {
@@ -54,8 +53,13 @@ impl Display for Record {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.operation {
             Operation::APPEND => {
-                write!(f, "APPEND: ({}, {})", self.id, self.content.as_ref().unwrap())
-            },
+                write!(
+                    f,
+                    "APPEND: ({}, {})",
+                    self.id,
+                    self.content.as_ref().unwrap()
+                )
+            }
             Operation::REMOVE => {
                 write!(f, "REMOVE: ({})", self.id)
             }
@@ -65,11 +69,10 @@ impl Display for Record {
 
 pub struct Database {
     checkpoint: File,
-    change: File
+    change: File,
 }
 
 impl Database {
-
     pub fn open(db_name: &str) -> Database {
         let checkpoint_path = db_name;
         let change_path = db_name.to_string() + ".change";
@@ -85,50 +88,48 @@ impl Database {
             .append(true)
             .open(change_path)
             .unwrap();
-        Database {
-            checkpoint,
-            change
-        }
+        Database { checkpoint, change }
     }
 
-    pub fn aggregate(&mut self) -> Result<HashMap<u64, String>, DatabaseError> {
+    pub fn aggregate(&mut self) -> HashMap<u64, String> {
         let change_record = self.read_change_records();
-        let mut result = self.read_checkpoint()?;
+        let mut result = self.read_checkpoint();
         for record in change_record.iter() {
             match result.contains_key(&record.id) {
-                true => {
-                    match record.operation {
-                        Operation::REMOVE =>  {
-                            result.remove(&record.id);
-                        },
-                        _ => warn!("Undefined operation for existing record, Skipping")
+                true => match record.operation {
+                    Operation::REMOVE => {
+                        result.remove(&record.id);
                     }
+                    _ => warn!("Trying to add an existing todo item, Skipping"),
                 },
-                false => {
-                    match record.operation {
-                        Operation::APPEND =>  {
-                            result.insert(record.id, record.content.clone().unwrap());
-                        },
-                        _ => warn!("Undefined operation for new record, Skipping")
+                false => match record.operation {
+                    Operation::APPEND => {
+                        result.insert(record.id, record.content.clone().unwrap());
                     }
-                }
+                    _ => warn!("Trying to delete an non-existing todo item, Skipping"),
+                },
             }
         }
-        self.write_checkpoint(&result);
-        self.flush_change()?;
-        return Ok(result);
-
+        if rand::thread_rng().gen_bool(0.1) {
+            // p = 0.1 that we flush the checkpoint and change file to reduce IO operations.
+            debug!("Flushing checkpoint and change...");
+            self.write_checkpoint(&result);
+            self.flush_change();
+        }
+        return result;
     }
 
-    fn flush_change(&mut self) -> Result<(), DatabaseError> {
-        match self.change.set_len(0) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(DatabaseError::new(format!("Error when flushing change file: {}", e.to_string()).as_str()))
-        }
+    fn flush_change(&mut self) {
+        self.change
+            .set_len(0)
+            .expect("Error while flushing change. Please clear change file manually.");
     }
 
     pub fn get_next_id(&mut self) -> u64 {
-        return SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        return SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
     }
 
     fn write_checkpoint(&mut self, checkpoint_map: &HashMap<u64, String>) {
@@ -138,7 +139,7 @@ impl Database {
         }
     }
 
-    fn read_checkpoint(&mut self) -> Result<HashMap<u64, String>, DatabaseError> {
+    fn read_checkpoint(&mut self) -> HashMap<u64, String> {
         let mut map = HashMap::<u64, String>::new();
         let reader = BufReader::new(&self.checkpoint);
         for line in reader.lines() {
@@ -146,10 +147,13 @@ impl Database {
                 let fields: Vec<&str> = line.split(',').collect();
                 map.insert(fields[0].parse::<u64>().unwrap(), fields[1].to_string());
             } else {
-                return Err(DatabaseError::new(format!("Error when reading checkpoint file at line: {}", line.as_ref().unwrap()).as_str()))
+                warn!(
+                    "Error when reading checkpoint file at line: {}",
+                    line.as_ref().unwrap()
+                )
             }
         }
-        return Ok(map);
+        map
     }
 
     fn read_change_records(&mut self) -> Vec<Record> {
@@ -159,18 +163,17 @@ impl Database {
             .map_while(Result::ok)
             .filter(|line| !line.is_empty())
             .map(|line| parse_line(&line))
-            .take_while(|result| result.is_ok())
-            .map(|x| x.ok().unwrap())
             .collect()
     }
 
-    pub fn add_record(&mut self, record: &Record) -> Result<(), Error> {
+    pub fn add_record(&mut self, record: &Record) {
         let line = match &record.content {
             Some(content) => format!("{},{},{}", record.id, 0, content),
-            None => format!("{},{}", record.id, 1)
+            None => format!("{},{}", record.id, 1),
         };
-        writeln!(self.change, "{}", line).unwrap();
-        info!("Operation {}", record);
-        Ok(())
+        match writeln!(self.change, "{}", line) {
+            Ok(_) => info!("Operation {}", record),
+            Err(_) => error!("Cannot write record: {} to change file.", line),
+        }
     }
 }
